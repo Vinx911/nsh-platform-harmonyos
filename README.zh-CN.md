@@ -4,6 +4,16 @@
 
 在 **HarmonyOS**（鸿蒙）和 **OpenHarmony** 上运行 [Native Shell](https://github.com/longbridge/nsh)（NSH）应用，界面用 ArkUI 的原生视图绘制。
 
+<p>
+  <img src="docs/screenshots/home.jpeg" width="19%" alt="Gallery">
+  <img src="docs/screenshots/stocks.jpeg" width="19%" alt="Stocks">
+  <img src="docs/screenshots/stock-detail.jpeg" width="19%" alt="A stock">
+  <img src="docs/screenshots/ai-chat-reply.jpeg" width="19%" alt="AI Chat">
+  <img src="docs/screenshots/photos.jpeg" width="19%" alt="Photos">
+</p>
+
+NSH 的 Gallery 运行在 OpenHarmony 7.0（API 26）模拟器上。
+
 > **NSH 之外的社区平台。** NSH 自带的后端有 iOS、Android、macOS、Windows、Linux、GPUI、终端和 Web。这个平台和
 > [`nsh-platform-miniprogram`](https://github.com/huacnlee/nsh-platform-miniprogram) 一样，建在 NSH 公开的平台扩展点上，放在单独的仓库里。NSH
 > 不发布、不测试、也不支持它，Issue 和 Pull Request 请提到这里，不要提到 `longbridge/nsh`。ArkUI 后端最初由
@@ -25,6 +35,10 @@ nsh run my-app --target harmonyos                  # 构建 HAP，安装到 hdc 
   `openharmony` 目录（里面有 `native/`）。它用来编译 native 库。
 - **DevEco Studio** 或 HarmonyOS 命令行工具：提供 `hvigorw`、`ohpm` 和 `hdc`，用来构建 HAP。如果不在
   `/Applications/DevEco-Studio.app`，用 `DEVECO_STUDIO_HOME` 指定位置。没有这些工具时，`package` 只写出工程，需要在 DevEco Studio 里构建。
+- **或者，不装 DevEco，面向 OpenHarmony**（`--runtime-os openharmony`）：准备一个 OpenHarmony SDK（`OHOS_BASE_SDK_HOME`，
+  按 hvigor 的要求每个 API 一个目录）、从 npm 安装的 hvigor（`npm install @ohos/hvigor @ohos/hvigor-ohos-plugin --registry
+  https://repo.harmonyos.com/npm/` 装到 `HVIGOR_HOME`，用 `node` 运行），以及 Java 运行时。工程里没有签名时，HAP 用 SDK
+  自带的调试密钥签名，OpenHarmony 设备和模拟器都能安装。
 
 | 选项 | |
 |---|---|
@@ -80,8 +94,9 @@ CLI 写出的是标准的 Stage 模型应用：`EntryAbility` 加载 `pages/Inde
 - 后端覆盖了 NSH 移动端后端的全部能力：视图和装饰、文字、图片、canvas、shader 视图、滚动视图和带下拉刷新的列表、文本输入、手势和 responder
   系统、原生动画图、带鸿蒙标题栏的导航栈、模态和 sheet、弹出层、视频、网页、无障碍、签名包，以及 `nsh dev`（特性 `dev`）。
 - 这里已验证：后端针对 NSH `main` 能为 `aarch64-unknown-linux-ohos` 编译，所有特性组合（默认、`dev`、`api-23`、`api-26`）都通过；
-  `package` 写出的工程里，库的未定义符号都能在 API 20 的系统库中解析，N-API 模块也以库名注册。下一步是在真机上运行：这套后端在
-  longbridge/nsh#475 里跑过真机，当时用的是更早版本的 NSH。
+  NSH 的 Gallery（TSX）和 counter（Rust）在 OpenHarmony 7.0（API 26）模拟器上运行，由
+  `nsh run --target harmonyos --runtime-os openharmony` 构建、签名并安装。在鸿蒙手机上，这套后端在 longbridge/nsh#475
+  里跑过，当时用的是更早版本的 NSH。
 
 ## 跟进 NSH
 

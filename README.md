@@ -5,6 +5,16 @@
 Run [Native Shell](https://github.com/longbridge/nsh) (NSH) apps on **HarmonyOS** (鸿蒙) and **OpenHarmony**, with
 ArkUI's native views.
 
+<p>
+  <img src="docs/screenshots/home.jpeg" width="19%" alt="Gallery">
+  <img src="docs/screenshots/stocks.jpeg" width="19%" alt="Stocks">
+  <img src="docs/screenshots/stock-detail.jpeg" width="19%" alt="A stock">
+  <img src="docs/screenshots/ai-chat-reply.jpeg" width="19%" alt="AI Chat">
+  <img src="docs/screenshots/photos.jpeg" width="19%" alt="Photos">
+</p>
+
+NSH's gallery on OpenHarmony 7.0 (API 26), in an emulator.
+
 > **A community platform, outside NSH.** NSH ships its own backends (iOS, Android, macOS, Windows, Linux, GPUI, the
 > terminal, the web); this one is built on NSH's public platform extension points, in a repository of its own, as
 > [`nsh-platform-miniprogram`](https://github.com/huacnlee/nsh-platform-miniprogram) is. NSH does not ship, test or
@@ -28,6 +38,11 @@ nsh run my-app --target harmonyos                  # builds, installs and starts
 - **DevEco Studio** or HarmonyOS's command-line tools for the HAP: `hvigorw`, `ohpm` and `hdc` (`DEVECO_STUDIO_HOME`
   when they are elsewhere than `/Applications/DevEco-Studio.app`). Without them, `package` writes the project and you
   build it in DevEco Studio.
+- **Or, without DevEco, for OpenHarmony** (`--runtime-os openharmony`): an OpenHarmony SDK
+  (`OHOS_BASE_SDK_HOME`, a directory per API as hvigor reads it), hvigor from npm (`npm install
+  @ohos/hvigor @ohos/hvigor-ohos-plugin --registry https://repo.harmonyos.com/npm/` into `HVIGOR_HOME`,
+  run by `node`) and a Java runtime. Without a signature in the project, the HAP is signed with the
+  SDK's own debug keys, which OpenHarmony devices and emulators install.
 
 | Option | |
 |---|---|
@@ -92,9 +107,9 @@ The project the CLI writes is a standard stage-model app: `EntryAbility` loads `
   graph, navigation stacks with HarmonyOS's headers, modals and sheets, popups, video, web views, accessibility,
   signed packages, `nsh dev` (feature `dev`).
 - Checked here: the backend builds for `aarch64-unknown-linux-ohos` against NSH's `main` with every feature set
-  (default, `dev`, `api-23`, `api-26`); `package` writes a project whose library's undefined symbols all resolve in API
-  20's system libraries and whose N-API module registers under the library's name. Running it on a device is next:
-  the backend ran on devices in longbridge/nsh#475, against an earlier NSH.
+  (default, `dev`, `api-23`, `api-26`), and NSH's gallery (TSX) and counter (Rust) run on OpenHarmony 7.0 (API 26)
+  in an emulator, built, signed and installed by `nsh run --target harmonyos --runtime-os openharmony`. On a
+  HarmonyOS phone it ran in longbridge/nsh#475, against an earlier NSH.
 
 ## Following NSH
 
