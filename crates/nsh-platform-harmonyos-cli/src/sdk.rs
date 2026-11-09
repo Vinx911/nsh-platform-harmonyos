@@ -1,0 +1,280 @@
+//! The tools this target builds with: the OpenHarmony NDK (the native
+//! library, cross-compiled for `aarch64-unknown-linux-ohos`), and DevEco
+//! Studio's or the command-line tools' `hvigorw`, `ohpm` and `hdc` (the HAP,
+//! signed, installed on a device).
+
+use std::{
+    env, fs,
+    path::{Path, PathBuf},
+    process::Command,
+};
+
+use anyhow::bail;
+
+/// The Rust target of HarmonyOS devices (`arm64-v8a`).
+pub(crate) const TRIPLE: &str = "aarch64-unknown-linux-ohos";
+const CLANG_TARGET: &str = "aarch64-linux-ohos";
+
+/// The OpenHarmony NDK: the SDK's `native` directory.
+pub(crate) struct Ndk {
+    pub(crate) native: PathBuf,
+}
+
+/// Where an SDK may be: the environment, then DevEco Studio's and the
+/// command-line tools' usual places.
+fn candidates() -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    for var in [
+        "OHOS_NDK_HOME",
+        "OHOS_SDK_HOME",
+        "DEVECO_SDK_HOME",
+        "DEVECO_STUDIO_HOME",
+    ] {
+        if let Some(value) = env::var_os(var) {
+            out.push(PathBuf::from(value));
+        }
+    }
+    let home = env::var_os("HOME").map(PathBuf::from);
+    if cfg!(target_os = "macos") {
+        out.push("/Applications/DevEco-Studio.app/Contents/sdk".into());
+        if let Some(home) = &home {
+            out.push(home.join("Applications/DevEco-Studio.app/Contents/sdk"));
+            out.push(home.join("Library/OpenHarmony/Sdk"));
+            out.push(home.join("Library/Huawei/Sdk"));
+            out.push(home.join("command-line-tools/sdk"));
+        }
+    } else if cfg!(windows) {
+        if let Some(local) = env::var_os("LOCALAPPDATA").map(PathBuf::from) {
+            out.push(local.join("OpenHarmony/Sdk"));
+            out.push(local.join("Huawei/Sdk"));
+        }
+        out.push(r"C:\Program Files\Huawei\DevEco Studio\sdk".into());
+    } else {
+        if let Some(home) = &home {
+            out.push(home.join("OpenHarmony/Sdk"));
+            out.push(home.join("command-line-tools/sdk"));
+        }
+        out.push("/opt/command-line-tools/sdk".into());
+    }
+    out
+}
+
+impl Ndk {
+    pub(crate) fn find() -> anyhow::Result<Ndk> {
+        if let Some(ndk) = candidates().iter().find_map(|c| Self::resolve(c, 4)) {
+            return Ok(ndk);
+        }
+        bail!(
+            "the OpenHarmony NDK was not found: install DevEco Studio, or set OHOS_NDK_HOME to an \
+             SDK's `openharmony` directory (the one with `native`), API 20 or later"
+        )
+    }
+
+    fn resolve(path: &Path, depth: u32) -> Option<Ndk> {
+        if depth == 0 || !path.is_dir() {
+            return None;
+        }
+        if path.join("llvm/bin").is_dir() && path.join("sysroot").is_dir() {
+            return Some(Ndk {
+                native: path.to_path_buf(),
+            });
+        }
+        for sub in ["native", "openharmony/native", "default/openharmony/native"] {
+            let native = path.join(sub);
+            if native.join("llvm/bin").is_dir() && native.join("sysroot").is_dir() {
+                return Some(Ndk { native });
+            }
+        }
+        // A versioned SDK directory (`<Sdk>/20/…`): the newest first.
+        let mut versions: Vec<PathBuf> = fs::read_dir(path)
+            .ok()?
+            .flatten()
+            .map(|e| e.path())
+            .filter(|p| p.is_dir())
+            .collect();
+        versions.sort_by_key(|p| {
+            p.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or_default()
+                .split(['.', '-'])
+                .map(|part| part.parse::<u64>().unwrap_or(0))
+                .collect::<Vec<_>>()
+        });
+        versions
+            .iter()
+            .rev()
+            .find_map(|version| Self::resolve(version, depth - 1))
+    }
+
+    /// A cargo command that cross-compiles for [`TRIPLE`] with this NDK.
+    pub(crate) fn cargo(&self) -> Command {
+        let bin = self.native.join("llvm/bin");
+        let sysroot = self.native.join("sysroot");
+        let exe = env::consts::EXE_SUFFIX;
+        let clang = bin.join(format!("clang{exe}"));
+        let wrapper = bin.join(format!("{TRIPLE}-clang"));
+        let wrapper_xx = bin.join(format!("{TRIPLE}-clang++"));
+        let use_wrapper = cfg!(unix) && wrapper.exists() && wrapper_xx.exists();
+        let (cc, cxx) = if use_wrapper {
+            (wrapper, wrapper_xx)
+        } else {
+            (clang.clone(), bin.join(format!("clang++{exe}")))
+        };
+        let triple = TRIPLE.replace('-', "_");
+        let sysroot_slash = sysroot.display().to_string().replace('\\', "/");
+        let flags = format!("--target={CLANG_TARGET} --sysroot=\"{sysroot_slash}\" -D__MUSL__");
+        let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        cmd.env(format!("CC_{triple}"), &cc)
+            .env(format!("CXX_{triple}"), &cxx)
+            .env(format!("AR_{triple}"), bin.join(format!("llvm-ar{exe}")))
+            .env(
+                format!("RANLIB_{triple}"),
+                bin.join(format!("llvm-ranlib{exe}")),
+            )
+            .env(
+                format!("CARGO_TARGET_{}_LINKER", triple.to_uppercase()),
+                if use_wrapper { &cc } else { &clang },
+            )
+            .env(format!("BINDGEN_EXTRA_CLANG_ARGS_{triple}"), &flags);
+        if !use_wrapper {
+            cmd.env(format!("CFLAGS_{triple}"), &flags)
+                .env(format!("CXXFLAGS_{triple}"), &flags);
+            let rustflags = [
+                format!("-Clink-arg=--target={CLANG_TARGET}"),
+                format!("-Clink-arg=--sysroot={}", sysroot.display()),
+            ];
+            cmd.env("CARGO_ENCODED_RUSTFLAGS", rustflags.join("\x1f"));
+        }
+        // bindgen (QuickJS's bindings) loads the NDK's libclang.
+        if env::var_os("LIBCLANG_PATH").is_none() {
+            let lib = if cfg!(windows) {
+                bin.clone()
+            } else {
+                self.native.join("llvm/lib")
+            };
+            cmd.env("LIBCLANG_PATH", lib);
+        }
+        cmd
+    }
+}
+
+/// DevEco Studio's (or the command-line tools') build and device tools.
+pub(crate) struct DevEco {
+    /// `hvigorw`: builds the HAP.
+    pub(crate) hvigorw: PathBuf,
+    /// `ohpm`: installs the project's ArkTS packages.
+    pub(crate) ohpm: Option<PathBuf>,
+    /// The SDK directory hvigor reads (`DEVECO_SDK_HOME`).
+    pub(crate) sdk: Option<PathBuf>,
+    /// Node.js for hvigor, when the tools bring their own.
+    pub(crate) node: Option<PathBuf>,
+}
+
+impl DevEco {
+    /// The tools, when they are installed.
+    pub(crate) fn find() -> Option<DevEco> {
+        let mut roots: Vec<PathBuf> = Vec::new();
+        for var in [
+            "DEVECO_STUDIO_HOME",
+            "DEVECO_CONTENTS",
+            "OHOS_COMMAND_LINE_TOOLS",
+        ] {
+            if let Some(value) = env::var_os(var) {
+                roots.push(value.into());
+            }
+        }
+        if cfg!(target_os = "macos") {
+            roots.push("/Applications/DevEco-Studio.app/Contents".into());
+            if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+                roots.push(home.join("Applications/DevEco-Studio.app/Contents"));
+                roots.push(home.join("command-line-tools"));
+            }
+        } else if cfg!(windows) {
+            roots.push(r"C:\Program Files\Huawei\DevEco Studio".into());
+        } else {
+            if let Some(home) = env::var_os("HOME").map(PathBuf::from) {
+                roots.push(home.join("command-line-tools"));
+            }
+            roots.push("/opt/command-line-tools".into());
+        }
+        let script = if cfg!(windows) {
+            "hvigorw.bat"
+        } else {
+            "hvigorw"
+        };
+        roots.into_iter().find_map(|root| {
+            let hvigorw = [
+                root.join("tools/hvigor/bin").join(script),
+                root.join("bin").join(script),
+                root.join("hvigor/bin").join(script),
+            ]
+            .into_iter()
+            .find(|p| p.is_file())?;
+            let ohpm_name = if cfg!(windows) { "ohpm.bat" } else { "ohpm" };
+            let ohpm = [
+                root.join("tools/ohpm/bin").join(ohpm_name),
+                root.join("bin").join(ohpm_name),
+                root.join("ohpm/bin").join(ohpm_name),
+            ]
+            .into_iter()
+            .find(|p| p.is_file());
+            let sdk = env::var_os("DEVECO_SDK_HOME")
+                .map(PathBuf::from)
+                .or_else(|| Some(root.join("sdk")).filter(|p| p.is_dir()));
+            let node = [root.join("tools/node/bin"), root.join("tool/node/bin")]
+                .into_iter()
+                .find(|p| p.is_dir());
+            Some(DevEco {
+                hvigorw,
+                ohpm,
+                sdk,
+                node,
+            })
+        })
+    }
+
+    /// A command running `program` with the tools' environment.
+    pub(crate) fn command(&self, program: &Path) -> Command {
+        let mut cmd = Command::new(program);
+        if let Some(sdk) = &self.sdk {
+            cmd.env("DEVECO_SDK_HOME", sdk);
+        }
+        if let Some(node) = &self.node {
+            let path = env::var_os("PATH").unwrap_or_default();
+            let mut paths = vec![node.clone()];
+            paths.extend(env::split_paths(&path));
+            if let Ok(joined) = env::join_paths(paths) {
+                cmd.env("PATH", joined);
+            }
+        }
+        cmd
+    }
+
+    /// `hdc`, which installs and starts the HAP on a device.
+    pub(crate) fn hdc(&self) -> Option<PathBuf> {
+        hdc(self.sdk.as_deref())
+    }
+}
+
+/// `hdc` on `PATH`, in the SDK's `toolchains`, or beside the NDK.
+pub(crate) fn hdc(sdk: Option<&Path>) -> Option<PathBuf> {
+    let name = if cfg!(windows) { "hdc.exe" } else { "hdc" };
+    if let Some(path) = env::var_os("PATH")
+        && let Some(found) = env::split_paths(&path)
+            .map(|dir| dir.join(name))
+            .find(|p| p.is_file())
+    {
+        return Some(found);
+    }
+    let mut dirs: Vec<PathBuf> = Vec::new();
+    if let Some(sdk) = sdk {
+        dirs.push(sdk.join("default/openharmony/toolchains"));
+        dirs.push(sdk.join("openharmony/toolchains"));
+    }
+    if let Ok(ndk) = Ndk::find()
+        && let Some(parent) = ndk.native.parent()
+    {
+        dirs.push(parent.join("toolchains"));
+    }
+    dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
+}

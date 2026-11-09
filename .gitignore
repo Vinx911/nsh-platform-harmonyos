@@ -1,0 +1,7 @@
+/target
+.nsh/
+node_modules/
+.DS_Store
+oh_modules/
+.hvigor/
+build/

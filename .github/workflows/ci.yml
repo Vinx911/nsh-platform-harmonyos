@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: Tests
+        run: cargo test --workspace
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  ohos:
+    runs-on: ubuntu-latest
+    env:
+      SDK_URL: https://repo.huaweicloud.com/openharmony/os/6.0-Release/ohos-sdk-windows_linux-public.tar.gz
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-ohos
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: The OpenHarmony NDK (API 20)
+        id: ndk
+        uses: actions/cache@v4
+        with:
+          path: ~/ohos-sdk
+          key: ohos-ndk-6.0-release
+      - name: Download the NDK
+        if: steps.ndk.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p ~/ohos-sdk/openharmony
+          curl -fsSL "$SDK_URL" | tar -xz -C ~/ohos-sdk --wildcards '*linux/native-linux-*.zip'
+          zip=$(find ~/ohos-sdk -name 'native-linux-*.zip' | head -1)
+          unzip -q "$zip" -d ~/ohos-sdk/openharmony
+          rm -f "$zip"
+      - name: The backend builds for HarmonyOS
+        run: |
+          N=~/ohos-sdk/openharmony/native
+          export CC_aarch64_unknown_linux_ohos=$N/llvm/bin/aarch64-unknown-linux-ohos-clang
+          export CXX_aarch64_unknown_linux_ohos=$N/llvm/bin/aarch64-unknown-linux-ohos-clang++
+          export AR_aarch64_unknown_linux_ohos=$N/llvm/bin/llvm-ar
+          export CARGO_TARGET_AARCH64_UNKNOWN_LINUX_OHOS_LINKER=$CC_aarch64_unknown_linux_ohos
+          export LIBCLANG_PATH=$N/llvm/lib
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_unknown_linux_ohos="--target=aarch64-linux-ohos --sysroot=$N/sysroot -D__MUSL__"
+          for features in "" dev api-23 api-26; do
+            cargo clippy -p nsh-platform-harmonyos --target aarch64-unknown-linux-ohos --features "$features" -- -D warnings
+          done

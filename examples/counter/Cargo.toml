@@ -1,0 +1,14 @@
+[package]
+name = "nsh-app-counter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }

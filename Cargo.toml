@@ -1,0 +1,84 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+repository = "https://github.com/huacnlee/nsh-platform-harmonyos"
+
+[workspace.lints.rust]
+missing_docs = "warn"
+unreachable_pub = "deny"
+
+[workspace.dependencies]
+nsh-core = "0.4"
+nsh-engine = { version = "0.4", default-features = false }
+nsh-base = { version = "0.4", default-features = false }
+nsh-package = "0.4"
+nsh-dev = "0.4"
+
+anyhow = "1"
+base64 = "0.22"
+getrandom = "0.3"
+log = "0.4"
+percent-encoding = "2.3"
+pollster = "0.4"
+rustc-hash = "2.1"
+serde_json = "1"
+thiserror = "2"
+tokio = { version = "1", default-features = false }
+ttf-parser = "0.25"
+unicode-segmentation = "1.13"
+ureq = "3.1"
+url = "2.5"
+wgpu = { version = "29", default-features = false, features = ["std", "parking_lot", "wgsl", "gles"] }
+glow = "0.18"
+khronos-egl = { version = "6", default-features = false, features = ["static", "no-pkg-config", "1_5"] }
+
+# HarmonyOS / OpenHarmony: N-API and the NDK's C APIs.
+napi-ohos = { version = "1.2.0", default-features = false, features = ["napi8", "serde-json", "tokio_rt"] }
+napi-derive-ohos = "1.2.0"
+napi-build-ohos = "1.2.0"
+ohos-arkui-binding = { version = "0.6.0", default-features = false, features = ["napi", "xcomponent", "api-20"] }
+ohos-accessibility-binding = { version = "0.2.0", default-features = false, features = ["api-20"] }
+ohos-display-binding = { version = "0.1.5", default-features = false, features = ["api-20"] }
+ohos-device-binding = { version = "0.1.0", default-features = false }
+ohos-drawing-binding = { version = "0.2.7", default-features = false, features = ["api-20"] }
+ohos-native-image-binding = { version = "0.1.0", default-features = false, features = ["api-20"] }
+ohos-resource-manager-binding = { version = "0.3.6", default-features = false, features = ["napi", "api-20"] }
+ohos-vsync-binding = { version = "0.3.2", default-features = false, features = ["api-20"] }
+ohos-web-binding = { version = "0.3.1", default-features = false, features = ["api-20"] }
+ohos-window-manager-binding = { version = "0.1.2", default-features = false, features = ["input", "api-20"] }
+ohos-image-native-binding = { version = "0.0.8", default-features = false }
+ohos-pasteboard-binding = { version = "0.0.8", default-features = false, features = ["api-20"] }
+ohos-udmf-binding = { version = "0.0.8", default-features = false, features = ["api-20"] }
+ohos-avplayer-binding = { version = "0.1.0", default-features = false, features = ["api-20"] }
+ohos-xcomponent-binding = { version = "0.6.0", default-features = false, features = ["callbacks", "multi_mode", "api-20"] }
+ohos-native-window-binding = { version = "0.3.3", default-features = false, features = ["api-20"] }
+ohos-hilog-binding = { version = "0.2.5", features = ["log"] }
+ohos-net-connection-binding = { version = "0.1.4", default-features = false }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+
+[profile.dev.package.quickjs-jit-sys]
+opt-level = 3
+[profile.dev.package.taffy]
+opt-level = 3
+
+# NSH's crates at the revision this platform is built against: the platform
+# extension points (longbridge/nsh#1393) are on `main` and not in a release yet.
+# To build against a local checkout, give each a `path = "<checkout>/crates/<name>"`.
+[patch.crates-io]
+nsh-core = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-engine = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-base = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-package = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-dev = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-js = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-macros = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }
+nsh-i18n = { git = "https://github.com/longbridge/nsh", rev = "826654b5cd10f02fec795f66fb53c4fe3dbb9981" }

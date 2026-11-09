@@ -1,0 +1,10 @@
+{
+  "name": "@nsh/harmonyos",
+  "version": "0.1.0",
+  "description": "Native Shell for HarmonyOS: the ArkTS side of the platform",
+  "main": "index.ets",
+  "license": "Apache-2.0",
+  "dependencies": {
+    "libnsh_platform_harmonyos.so": "file:./src/main/cpp/types/libnsh_platform_harmonyos"
+  }
+}

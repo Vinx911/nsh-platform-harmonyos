@@ -1,0 +1,44 @@
+{
+  "app": {
+    "products": [
+      {
+        "name": "default",
+        {{productSigning}}
+        "compatibleSdkVersion": {{compatibleSdkVersion}},
+        "targetSdkVersion": {{compatibleSdkVersion}},
+        "runtimeOS": "{{runtimeOS}}",
+        "buildOption": {
+          "strictMode": {
+            "caseSensitiveCheck": true,
+            "useNormalizedOHMUrl": true
+          }
+        }
+      }
+    ],
+    "buildModeSet": [
+      {
+        "name": "debug"
+      },
+      {
+        "name": "release"
+      }
+    ],
+    "signingConfigs": {{signingConfigs}}
+  },
+  "modules": [
+    {
+      "name": "nsh_harmonyos",
+      "srcPath": "./nsh"
+    },
+    {
+      "name": "entry",
+      "srcPath": "./entry",
+      "targets": [
+        {
+          "name": "default",
+          "applyToProducts": ["default"]
+        }
+      ]
+    }
+  ]
+}
