@@ -4,8 +4,7 @@
       {
         "name": "default",
         {{productSigning}}
-        "compatibleSdkVersion": {{compatibleSdkVersion}},
-        "targetSdkVersion": {{compatibleSdkVersion}},
+        {{sdkVersions}}
         "runtimeOS": "{{runtimeOS}}",
         "buildOption": {
           "strictMode": {

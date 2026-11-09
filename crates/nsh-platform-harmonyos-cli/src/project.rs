@@ -85,14 +85,38 @@ impl RuntimeOs {
         }
     }
 
-    /// `runtimeOS` and the SDK versions of `build-profile.json5` (API 20).
-    fn profile(self) -> (&'static str, &'static str) {
+    /// `runtimeOS` and the SDK versions of `build-profile.json5`. Both
+    /// need API 20. HarmonyOS names its SDK by release; an OpenHarmony
+    /// project compiles against the SDK hvigor finds (`compile_api`), which
+    /// from API 21 on hvigor wants as a `"<api>.0.0"` string.
+    fn profile(self, compile_api: u32) -> (&'static str, String) {
         match self {
-            RuntimeOs::HarmonyOs => ("HarmonyOS", "\"6.0.0(20)\""),
-            RuntimeOs::OpenHarmony => ("OpenHarmony", "20"),
+            RuntimeOs::HarmonyOs => (
+                "HarmonyOS",
+                "\"compatibleSdkVersion\": \"6.0.0(20)\",\n        \"targetSdkVersion\": \"6.0.0(20)\","
+                    .to_owned(),
+            ),
+            RuntimeOs::OpenHarmony => {
+                let api = compile_api.max(MIN_API);
+                let version = if api > MIN_API {
+                    format!("\"{api}.0.0\"")
+                } else {
+                    api.to_string()
+                };
+                (
+                    "OpenHarmony",
+                    format!(
+                        "\"compileSdkVersion\": {version},\n        \"compatibleSdkVersion\": \
+                         {MIN_API},\n        \"targetSdkVersion\": {version},"
+                    ),
+                )
+            }
         }
     }
 }
+
+/// The oldest API the backend runs on (HarmonyOS 6.0).
+pub(crate) const MIN_API: u32 = 20;
 
 /// What goes into the project besides the template.
 pub(crate) struct Contents<'a> {
@@ -103,6 +127,9 @@ pub(crate) struct Contents<'a> {
     pub(crate) build: &'a Path,
     /// The OS the HAP targets.
     pub(crate) runtime_os: RuntimeOs,
+    /// The API of the OpenHarmony SDK hvigor builds with ([`MIN_API`]
+    /// when unknown).
+    pub(crate) compile_api: u32,
 }
 
 /// The `"signingConfigs": [...]` array of an existing `build-profile.json5`,
@@ -166,14 +193,14 @@ pub(crate) fn write(out: &Path, config: &AppConfig, contents: &Contents<'_>) -> 
         Some(name) => format!("\"signingConfig\": \"{}\",", json_text(name)),
         None => String::new(),
     };
-    let (runtime_os, sdk_version) = contents.runtime_os.profile();
+    let (runtime_os, sdk_versions) = contents.runtime_os.profile(contents.compile_api);
     let substitutions = [
         ("{{bundleName}}", json_text(&config.id)),
         ("{{vendor}}", json_text(&config.name)),
         ("{{appName}}", json_text(&config.name)),
         ("{{versionName}}", json_text(&config.version)),
         ("{{versionCode}}", config.build.to_string()),
-        ("{{compatibleSdkVersion}}", sdk_version.to_owned()),
+        ("{{sdkVersions}}", sdk_versions),
         ("{{runtimeOS}}", runtime_os.to_owned()),
         ("{{signingConfigs}}", signing),
         ("{{productSigning}}", product_signing),
@@ -286,6 +313,25 @@ mod tests {
     }
 
     #[test]
+    fn names_sdk_versions_as_hvigor_reads_them() {
+        let (os, versions) = RuntimeOs::OpenHarmony.profile(26);
+        assert_eq!(os, "OpenHarmony");
+        assert!(
+            versions.contains("\"compileSdkVersion\": \"26.0.0\","),
+            "{versions}"
+        );
+        assert!(
+            versions.contains("\"compatibleSdkVersion\": 20,"),
+            "{versions}"
+        );
+        let (_, versions) = RuntimeOs::OpenHarmony.profile(0);
+        assert!(
+            versions.contains("\"compileSdkVersion\": 20,"),
+            "{versions}"
+        );
+    }
+
+    #[test]
     fn keeps_signing_set_up_in_deveco() {
         let profile = r#"{
   "app": {
@@ -328,6 +374,7 @@ mod tests {
             library: &library,
             build: &build,
             runtime_os: RuntimeOs::HarmonyOs,
+            compile_api: MIN_API,
         };
         write(&out, &config, &contents).unwrap();
         let app = fs::read_to_string(out.join("AppScope/app.json5")).unwrap();
@@ -340,6 +387,9 @@ mod tests {
         assert!(strings.contains(r#""value": "Counter \"1\"""#), "{strings}");
         let profile = fs::read_to_string(out.join("build-profile.json5")).unwrap();
         assert!(profile.contains("\"runtimeOS\": \"HarmonyOS\""));
+        assert!(profile.contains("\"targetSdkVersion\": \"6.0.0(20)\","));
+        let module = fs::read_to_string(out.join("entry/src/main/module.json5")).unwrap();
+        assert!(module.contains("\"default\","), "{module}");
         assert!(profile.contains("\"signingConfigs\": []"));
         assert!(!profile.contains("{{"), "{profile}");
         assert!(

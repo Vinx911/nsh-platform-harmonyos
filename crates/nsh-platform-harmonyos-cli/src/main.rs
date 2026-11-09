@@ -13,8 +13,10 @@
 //!    backend (and the Rust app) into `libnsh_platform_harmonyos.so`, built
 //!    with the OpenHarmony NDK ([`runner`], [`sdk`]);
 //! 3. the project template, the ArkTS package and the library are written
-//!    out ([`project`]); with DevEco Studio's tools installed, `hvigorw`
-//!    builds the HAP, and `run` installs and starts it with `hdc`.
+//!    out ([`project`]); with DevEco Studio's tools (or hvigor from npm)
+//!    installed, hvigor builds the HAP, an OpenHarmony one is signed with the
+//!    SDK's debug keys when the project has no signature ([`sign`]), and
+//!    `run` installs and starts it with `hdc`.
 
 mod embedded {
     include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
@@ -22,6 +24,7 @@ mod embedded {
 mod project;
 mod runner;
 mod sdk;
+mod sign;
 
 use std::{
     env,
@@ -60,7 +63,9 @@ Options:
 
 Environment:
   OHOS_NDK_HOME          An OpenHarmony SDK's `openharmony` directory (found in DevEco Studio otherwise)
-  DEVECO_STUDIO_HOME     DevEco Studio's `Contents` or the command-line tools' directory";
+  DEVECO_STUDIO_HOME     DevEco Studio's `Contents` or the command-line tools' directory
+  HVIGOR_HOME            Without DevEco: where @ohos/hvigor is installed from npm (run by `node`)
+  OHOS_BASE_SDK_HOME     Without DevEco: the OpenHarmony SDKs hvigor builds with (one directory per API)";
 
 /// What a command was asked to do.
 #[derive(Debug, Default, PartialEq)]
@@ -127,16 +132,18 @@ fn run(options: anyhow::Result<Options>) -> anyhow::Result<()> {
             };
             let config = package(&app, &out, options.release.unwrap_or(true), &options)?;
             println!("✓ wrote the DevEco Studio project to {}", out.display());
+            let mut signed = config.signed;
             if options.hap {
                 match sdk::DevEco::find() {
                     Some(deveco) => {
-                        let hap = hap(&deveco, &out, true, options.verbose)?;
-                        println!("✓ built {}", hap.display());
+                        let built = hap(&deveco, &out, &config, &options, true)?;
+                        println!("✓ built {}", built.path.display());
+                        signed = built.signed;
                     }
                     None => no_deveco(&out),
                 }
             }
-            if !config.signed {
+            if !signed {
                 println!(
                     "  sign it before installing or publishing: open the project in DevEco Studio, \
                      File → Project Structure → Signing Configs (packaging again keeps them)"
@@ -151,20 +158,20 @@ fn run(options: anyhow::Result<Options>) -> anyhow::Result<()> {
             let Some(deveco) = sdk::DevEco::find() else {
                 no_deveco(&out);
                 bail!(
-                    "DevEco Studio's tools (hvigorw) were not found: they build and sign the HAP"
+                    "hvigor was not found (DevEco Studio's tools, or HVIGOR_HOME): it builds the HAP"
                 );
             };
-            let hap = hap(&deveco, &out, release, options.verbose)?;
-            if !config.signed {
+            let built = hap(&deveco, &out, &config, &options, release)?;
+            if !built.signed {
                 bail!(
                     "{} is not signed, and devices install signed HAPs only: open {} in DevEco \
                      Studio, sign in and let File → Project Structure → Signing Configs generate \
                      a signature, then run again (it is kept)",
-                    hap.display(),
+                    built.path.display(),
                     out.display()
                 );
             }
-            install(&deveco, &hap, &config.id, options.device.as_deref())?;
+            install(&deveco, &built.path, &config.id, options.device.as_deref())?;
         }
         "test" => bail!(
             "the harmonyos target runs no tests itself: `nsh test` runs the app's tests \
@@ -209,6 +216,7 @@ fn nsh() -> OsString {
 /// What `run` needs from a packaged project.
 struct Packaged {
     id: String,
+    /// Whether the project has a signing config (DevEco's).
     signed: bool,
 }
 
@@ -241,6 +249,7 @@ fn package(app: &Path, out: &Path, release: bool, options: &Options) -> anyhow::
             library: &library,
             build: &build,
             runtime_os: options.runtime_os,
+            compile_api: sdk::BaseSdk::find().map_or(project::MIN_API, |sdk| sdk.api),
         },
     )?;
     let profile = fs::read_to_string(out.join("build-profile.json5")).unwrap_or_default();
@@ -260,25 +269,48 @@ fn is_rust_app(app: &Path) -> bool {
 
 fn no_deveco(out: &Path) {
     println!(
-        "  DevEco Studio's tools were not found (set DEVECO_STUDIO_HOME): open {} in DevEco \
-         Studio to build, sign and run it",
+        "  DevEco Studio's tools were not found (set DEVECO_STUDIO_HOME, or HVIGOR_HOME and \
+         OHOS_BASE_SDK_HOME for hvigor from npm): open {} in DevEco Studio to build, sign and \
+         run it",
         out.display()
     );
 }
 
-/// Builds the project's HAP with hvigor; its path.
+/// A HAP hvigor built.
+struct Hap {
+    path: PathBuf,
+    signed: bool,
+}
+
+/// Builds the project's HAP with hvigor, and signs an OpenHarmony one the
+/// project has no signature for with the SDK's debug keys.
 fn hap(
     deveco: &sdk::DevEco,
     project: &Path,
+    config: &Packaged,
+    options: &Options,
     release: bool,
-    verbose: bool,
-) -> anyhow::Result<PathBuf> {
+) -> anyhow::Result<Hap> {
+    let verbose = options.verbose;
     let quiet = |cmd: &mut Command| {
         if !verbose {
             cmd.stdout(std::process::Stdio::null());
         }
     };
-    if let Some(ohpm) = &deveco.ohpm {
+    if let sdk::Hvigor::Script { .. } = deveco.hvigor
+        && let Some(base) = sdk::BaseSdk::find()
+    {
+        fs::write(
+            project.join("local.properties"),
+            format!(
+                "sdk.dir={}\n",
+                base.dir.display().to_string().replace('\\', "/")
+            ),
+        )?;
+    }
+    if deveco.ohpm.is_none() {
+        link_packages(project)?;
+    } else if let Some(ohpm) = &deveco.ohpm {
         println!("• installing the project's ArkTS packages (ohpm install)");
         let mut cmd = deveco.command(ohpm);
         cmd.arg("install").current_dir(project);
@@ -288,8 +320,8 @@ fn hap(
         }
     }
     let mode = if release { "release" } else { "debug" };
-    println!("• building the HAP (hvigorw assembleHap, {mode})");
-    let mut cmd = deveco.command(&deveco.hvigorw);
+    println!("• building the HAP (hvigor assembleHap, {mode})");
+    let mut cmd = deveco.hvigor();
     cmd.args([
         "assembleHap",
         "--mode",
@@ -302,15 +334,94 @@ fn hap(
     ])
     .current_dir(project);
     quiet(&mut cmd);
-    if !cmd.status().context("running hvigorw")?.success() {
+    if !cmd.status().context("running hvigor")?.success() {
         bail!("hvigor could not build the HAP (run with -v to see why)");
     }
     let outputs = project.join("entry/build/default/outputs/default");
-    ["entry-default-signed.hap", "entry-default-unsigned.hap"]
-        .into_iter()
-        .map(|name| outputs.join(name))
-        .find(|p| p.is_file())
-        .with_context(|| format!("hvigor wrote no HAP in {}", outputs.display()))
+    let signed = outputs.join("entry-default-signed.hap");
+    let unsigned = outputs.join("entry-default-unsigned.hap");
+    if config.signed && signed.is_file() {
+        return Ok(Hap {
+            path: signed,
+            signed: true,
+        });
+    }
+    if !unsigned.is_file() {
+        bail!("hvigor wrote no HAP in {}", outputs.display());
+    }
+    if options.runtime_os == project::RuntimeOs::OpenHarmony
+        && let Some(lib) = sdk::signing_lib()
+    {
+        println!("• signing it with the OpenHarmony SDK's debug keys (hap-sign-tool)");
+        sign::sign(
+            &lib,
+            &project.join("build/signing"),
+            &config.id,
+            &unsigned,
+            &signed,
+            verbose,
+        )?;
+        return Ok(Hap {
+            path: signed,
+            signed: true,
+        });
+    }
+    Ok(Hap {
+        path: unsigned,
+        signed: false,
+    })
+}
+
+/// What `ohpm install` would link without ohpm: the entry's dependencies on
+/// the ArkTS package and the library's declarations, the package's on the
+/// declarations.
+fn link_packages(project: &Path) -> anyhow::Result<()> {
+    let types = "src/main/cpp/types/libnsh_platform_harmonyos";
+    for (link, target) in [
+        ("entry/oh_modules/@nsh/harmonyos", "nsh".to_owned()),
+        (
+            "entry/oh_modules/libnsh_platform_harmonyos.so",
+            format!("nsh/{types}"),
+        ),
+        (
+            "nsh/oh_modules/libnsh_platform_harmonyos.so",
+            format!("nsh/{types}"),
+        ),
+    ] {
+        let link = project.join(link);
+        if let Some(parent) = link.parent() {
+            fs::create_dir_all(parent)?;
+        }
+        if fs::symlink_metadata(&link).is_ok() {
+            match fs::remove_file(&link) {
+                Ok(()) => {}
+                Err(_) => fs::remove_dir_all(&link)?,
+            }
+        }
+        let target = project.join(target);
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&target, &link)
+            .with_context(|| format!("linking {}", link.display()))?;
+        #[cfg(not(unix))]
+        copy_dir(&target, &link)?;
+    }
+    fs::create_dir_all(project.join("oh_modules"))?;
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn copy_dir(from: &Path, to: &Path) -> anyhow::Result<()> {
+    fs::create_dir_all(to)?;
+    for entry in fs::read_dir(from)? {
+        let entry = entry?;
+        let target = to.join(entry.file_name());
+        if entry.file_type()?.is_dir() {
+            copy_dir(&entry.path(), &target)?;
+        } else {
+            fs::copy(entry.path(), target)?;
+        }
+    }
+    Ok(())
 }
 
 /// Installs `hap` with `hdc` and starts its ability.

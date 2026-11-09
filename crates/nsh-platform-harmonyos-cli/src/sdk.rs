@@ -1,7 +1,9 @@
 //! The tools this target builds with: the OpenHarmony NDK (the native
 //! library, cross-compiled for `aarch64-unknown-linux-ohos`), and DevEco
 //! Studio's or the command-line tools' `hvigorw`, `ohpm` and `hdc` (the HAP,
-//! signed, installed on a device).
+//! signed, installed on a device). Without DevEco, hvigor installed from
+//! npm (`HVIGOR_HOME`) builds an OpenHarmony project with an OpenHarmony
+//! SDK (`OHOS_BASE_SDK_HOME`), and the SDK's own tools sign it.
 
 use std::{
     env, fs,
@@ -163,10 +165,55 @@ impl Ndk {
     }
 }
 
-/// DevEco Studio's (or the command-line tools') build and device tools.
+/// How hvigor runs.
+pub(crate) enum Hvigor {
+    /// DevEco Studio's or the command-line tools' `hvigorw`.
+    Wrapper(PathBuf),
+    /// `@ohos/hvigor` installed from npm: `node <bin/hvigor.js>`, its
+    /// packages on `NODE_PATH`.
+    Script { js: PathBuf, modules: PathBuf },
+}
+
+/// An OpenHarmony SDK as hvigor reads it (`OHOS_BASE_SDK_HOME`, the
+/// project's `local.properties` `sdk.dir`): a directory per API, each with
+/// `ets`, `js`, `native`, `toolchains`, `previewer`.
+pub(crate) struct BaseSdk {
+    pub(crate) dir: PathBuf,
+    /// The newest API in it.
+    pub(crate) api: u32,
+}
+
+impl BaseSdk {
+    pub(crate) fn find() -> Option<BaseSdk> {
+        let dir = PathBuf::from(env::var_os("OHOS_BASE_SDK_HOME")?);
+        let api = fs::read_dir(&dir)
+            .ok()?
+            .flatten()
+            .filter(|e| e.path().join("toolchains").is_dir())
+            .filter_map(|e| {
+                let name = e.file_name().to_string_lossy().into_owned();
+                name.split('.').next()?.parse::<u32>().ok()
+            })
+            .max()?;
+        Some(BaseSdk { dir, api })
+    }
+
+    /// The newest API's directory.
+    pub(crate) fn openharmony(&self) -> PathBuf {
+        let plain = self.dir.join(self.api.to_string());
+        if plain.is_dir() {
+            plain
+        } else {
+            self.dir.join(format!("{}.0.0", self.api))
+        }
+    }
+}
+
+/// DevEco Studio's (or the command-line tools') build and device tools, or
+/// hvigor from npm.
 pub(crate) struct DevEco {
-    /// `hvigorw`: builds the HAP.
-    pub(crate) hvigorw: PathBuf,
+    /// Builds the HAP.
+    pub(crate) hvigor: Hvigor,
     /// `ohpm`: installs the project's ArkTS packages.
     pub(crate) ohpm: Option<PathBuf>,
     /// The SDK directory hvigor reads (`DEVECO_SDK_HOME`).
@@ -176,8 +223,36 @@ pub(crate) struct DevEco {
 }
 
 impl DevEco {
-    /// The tools, when they are installed.
+    /// The tools, when they are installed: DevEco's, or hvigor from npm.
     pub(crate) fn find() -> Option<DevEco> {
+        Self::find_deveco().or_else(Self::find_npm)
+    }
+
+    /// `@ohos/hvigor` under `HVIGOR_HOME` (an npm prefix, or its
+    /// `node_modules`), run by the `node` on `PATH`.
+    fn find_npm() -> Option<DevEco> {
+        let home = PathBuf::from(env::var_os("HVIGOR_HOME")?);
+        let modules = [home.join("node_modules"), home]
+            .into_iter()
+            .find(|m| m.join("@ohos/hvigor/bin/hvigor.js").is_file())?;
+        let ohpm = env::var_os("PATH").and_then(|path| {
+            let name = if cfg!(windows) { "ohpm.bat" } else { "ohpm" };
+            env::split_paths(&path)
+                .map(|dir| dir.join(name))
+                .find(|p| p.is_file())
+        });
+        Some(DevEco {
+            hvigor: Hvigor::Script {
+                js: modules.join("@ohos/hvigor/bin/hvigor.js"),
+                modules,
+            },
+            ohpm,
+            sdk: None,
+            node: None,
+        })
+    }
+
+    fn find_deveco() -> Option<DevEco> {
         let mut roots: Vec<PathBuf> = Vec::new();
         for var in [
             "DEVECO_STUDIO_HOME",
@@ -230,7 +305,7 @@ impl DevEco {
                 .into_iter()
                 .find(|p| p.is_dir());
             Some(DevEco {
-                hvigorw,
+                hvigor: Hvigor::Wrapper(hvigorw),
                 ohpm,
                 sdk,
                 node,
@@ -255,6 +330,18 @@ impl DevEco {
         cmd
     }
 
+    /// The command that runs hvigor.
+    pub(crate) fn hvigor(&self) -> Command {
+        match &self.hvigor {
+            Hvigor::Wrapper(hvigorw) => self.command(hvigorw),
+            Hvigor::Script { js, modules } => {
+                let mut cmd = self.command(Path::new("node"));
+                cmd.arg(js).env("NODE_PATH", modules);
+                cmd
+            }
+        }
+    }
+
     /// `hdc`, which installs and starts the HAP on a device.
     pub(crate) fn hdc(&self) -> Option<PathBuf> {
         hdc(self.sdk.as_deref())
@@ -276,10 +363,37 @@ pub(crate) fn hdc(sdk: Option<&Path>) -> Option<PathBuf> {
         dirs.push(sdk.join("default/openharmony/toolchains"));
         dirs.push(sdk.join("openharmony/toolchains"));
     }
+    if let Some(base) = BaseSdk::find() {
+        dirs.push(base.openharmony().join("toolchains"));
+    }
     if let Ok(ndk) = Ndk::find()
         && let Some(parent) = ndk.native.parent()
     {
         dirs.push(parent.join("toolchains"));
     }
     dirs.into_iter().map(|d| d.join(name)).find(|p| p.is_file())
+}
+
+/// The OpenHarmony SDK's signing tools and debug keys
+/// (`toolchains/lib`: `hap-sign-tool.jar`, `OpenHarmony.p12`, the profile
+/// template and certificate), in the base SDK or beside the NDK.
+pub(crate) fn signing_lib() -> Option<PathBuf> {
+    let mut dirs = Vec::new();
+    if let Some(base) = BaseSdk::find() {
+        dirs.push(base.openharmony().join("toolchains/lib"));
+    }
+    if let Ok(ndk) = Ndk::find()
+        && let Some(parent) = ndk.native.parent()
+    {
+        dirs.push(parent.join("toolchains/lib"));
+    }
+    dirs.into_iter().find(|d| {
+        [
+            "hap-sign-tool.jar",
+            "OpenHarmony.p12",
+            "UnsgnedReleasedProfileTemplate.json",
+        ]
+        .iter()
+        .all(|f| d.join(f).is_file())
+    })
 }
