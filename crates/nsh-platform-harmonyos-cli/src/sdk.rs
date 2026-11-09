@@ -124,6 +124,11 @@ impl Ndk {
         let sysroot_slash = sysroot.display().to_string().replace('\\', "/");
         let flags = format!("--target={CLANG_TARGET} --sysroot=\"{sysroot_slash}\" -D__MUSL__");
         let mut cmd = Command::new(env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+        // N-API's build script finds the system libraries under
+        // `$OHOS_NDK_HOME/native`.
+        if let Some(openharmony) = self.native.parent() {
+            cmd.env("OHOS_NDK_HOME", openharmony);
+        }
         cmd.env(format!("CC_{triple}"), &cc)
             .env(format!("CXX_{triple}"), &cxx)
             .env(format!("AR_{triple}"), bin.join(format!("llvm-ar{exe}")))

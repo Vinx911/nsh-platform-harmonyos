@@ -50,7 +50,8 @@ jobs:
           rm -f "$zip"
       - name: The backend builds for HarmonyOS
         run: |
-          N=~/ohos-sdk/openharmony/native
+          export OHOS_NDK_HOME=~/ohos-sdk/openharmony
+          N=$OHOS_NDK_HOME/native
           export CC_aarch64_unknown_linux_ohos=$N/llvm/bin/aarch64-unknown-linux-ohos-clang
           export CXX_aarch64_unknown_linux_ohos=$N/llvm/bin/aarch64-unknown-linux-ohos-clang++
           export AR_aarch64_unknown_linux_ohos=$N/llvm/bin/llvm-ar
