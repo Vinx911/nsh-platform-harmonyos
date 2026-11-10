@@ -10,6 +10,7 @@ import { NativeSpeech, SpeechReply } from "./NativeSpeech";
 export interface SystemReply {
   has?: boolean;
   text?: string;
+  html?: string;
   uri?: string;
   width?: number;
   height?: number;
@@ -33,6 +34,7 @@ export interface SystemRequest {
   op: string;
   text?: string;
   uri?: string;
+  asset?: string;
   hasOnly?: boolean;
   name?: string;
   title?: string;
@@ -67,7 +69,7 @@ export class NativeSystem {
     this.clipboard = new NativeClipboard(ui);
     this.notifications = new NativeNotifications(context);
     this.speech = new NativeSpeech(context);
-    this.audio = new NativeAudio();
+    this.audio = new NativeAudio(context);
     this.reply = reply;
   }
   async execute(key: number, request: SystemRequest): Promise<void> {

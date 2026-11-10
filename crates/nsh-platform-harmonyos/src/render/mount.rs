@@ -1397,6 +1397,34 @@ impl Mounter {
                                 nsh_core::PayloadValue::Number(f64::from(id)),
                             )]),
                         ),
+                        Command::Audio(nsh_core::audio::AudioCommand::Load {
+                            id,
+                            bytes,
+                            hint,
+                            max_duration,
+                        }) => {
+                            // Sound.load waits for Loaded before Play or Unload, so
+                            // staging on a worker preserves the command order.
+                            let host = self.host.clone();
+                            let route = self.dispatcher.clone();
+                            std::thread::Builder::new()
+                                .name("nsh-audio-load".into())
+                                .spawn(move || {
+                                    if let Err(error) = host.system.load_sound(
+                                        &host,
+                                        route,
+                                        id,
+                                        bytes,
+                                        hint,
+                                        max_duration,
+                                    ) {
+                                        log::warn!("OHOS sound load failed: {error}");
+                                    }
+                                })
+                                .map_err(|error| {
+                                    napi_ohos::Error::from_reason(error.to_string())
+                                })?;
+                        }
                         Command::Audio(audio) => {
                             self.host.system.audio(
                                 &self.host,
@@ -1590,11 +1618,19 @@ impl Mounter {
         Ok(())
     }
 
-    pub(crate) fn input_paste(&self, id: NodeId, text: String, report_only: bool) -> Result<()> {
+    pub(crate) fn input_paste(
+        &self,
+        id: NodeId,
+        text: String,
+        html: Option<String>,
+        files: Option<String>,
+        image: Option<String>,
+        report_only: bool,
+    ) -> Result<()> {
         if let Some(node) = self.slots.get(id as usize).and_then(Option::as_ref)
             && let Some(input) = node.input.borrow().as_ref()
         {
-            input.complete_paste(text, report_only)?;
+            input.complete_paste(text, html, files, image, report_only)?;
         }
         Ok(())
     }

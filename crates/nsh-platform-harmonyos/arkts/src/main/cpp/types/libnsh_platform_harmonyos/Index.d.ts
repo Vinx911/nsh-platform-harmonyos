@@ -43,6 +43,8 @@ export interface EditorCommand {
   end: number
   x: number
   y: number
+  width: number
+  height: number
   animated: boolean
   text?: string
   actions?: Array<string>
@@ -58,6 +60,9 @@ export interface EditorEvent {
   end: number
   width: number
   height: number
+  html?: string
+  files?: string
+  image?: string
 }
 
 export interface EditorReceipt {
@@ -254,7 +259,10 @@ export interface NshNativeProperty {
 
 /** Per-surface resources and VM limits selected by the embedding host. */
 export interface NshOptions {
-  /** Directory containing the build's `assets/` contents. */
+  /**
+   * Directory containing the build's `assets/` contents.
+   * Setting it also disables downloaded-package updates.
+   */
   assetDirectory?: string
   /** Override this app's storage directory, from the next load. */
   storageDirectory?: string
@@ -304,6 +312,7 @@ export interface SystemCommand {
   op: string
   text?: string
   uri?: string
+  asset?: string
   hasOnly?: boolean
   name?: string
   title?: string
@@ -327,6 +336,7 @@ export interface SystemEvent {
   pressed?: string
   has?: boolean
   text?: string
+  html?: string
   uri?: string
   width?: number
   height?: number

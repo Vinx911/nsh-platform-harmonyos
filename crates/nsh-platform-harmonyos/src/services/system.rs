@@ -224,8 +224,7 @@ impl System {
                 paste: Some((node_id, report_only)),
             },
             SystemCommand {
-                op: "clipboard-read".into(),
-                has_only: Some(false),
+                op: "clipboard-paste".into(),
                 ..Default::default()
             },
         )
@@ -280,6 +279,78 @@ impl System {
         }
     }
 
+    fn stage_audio_temp(
+        host: &Services,
+        prefix: &str,
+        id: u32,
+        hint: &str,
+        bytes: &[u8],
+    ) -> Result<String, String> {
+        let dir = host.cache_directory().join("audio");
+        std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+        let ext = std::path::Path::new(hint.split(['?', '#']).next().unwrap_or(hint))
+            .extension()
+            .and_then(|e| e.to_str())
+            .filter(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()))
+            .unwrap_or("bin");
+        let mut random = [0u8; 8];
+        let _ = getrandom::fill(&mut random);
+        let path = dir.join(format!(
+            "{prefix}-{id}-{:016x}.{ext}",
+            u64::from_le_bytes(random)
+        ));
+        std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
+        Ok(path.to_string_lossy().into_owned())
+    }
+
+    pub(crate) fn load_sound(
+        &self,
+        host: &Services,
+        route: Weak<Dispatcher>,
+        id: u32,
+        bytes: nsh_core::image::ImageData,
+        hint: String,
+        max_duration: std::time::Duration,
+    ) -> napi_ohos::Result<()> {
+        use nsh_core::audio::{AudioError, AudioEvent as E};
+        let path = match Self::stage_audio_temp(host, "sound", id, &hint, &bytes) {
+            Ok(path) => path,
+            Err(message) => {
+                if let Some(route) = route.upgrade() {
+                    route.send(Message::HostEvent(
+                        EventKind::Audio,
+                        EventPayload::Audio {
+                            id,
+                            event: E::Failed {
+                                error: AudioError::Failed,
+                                message,
+                            },
+                        },
+                    ));
+                }
+                return Ok(());
+            }
+        };
+        self.submit(
+            host,
+            Request {
+                route,
+                kind: EventKind::Audio,
+                id,
+                stream: false,
+                answer: true,
+                paste: None,
+            },
+            SystemCommand {
+                op: "audio-load".into(),
+                count: Some(id),
+                uri: Some(path),
+                duration_ms: Some(max_duration.as_secs_f64() * 1000.0),
+                ..Default::default()
+            },
+        )
+    }
+
     pub(crate) fn audio(
         &self,
         host: &Services,
@@ -288,68 +359,7 @@ impl System {
         command: nsh_core::audio::AudioCommand,
     ) -> napi_ohos::Result<()> {
         use nsh_core::audio::{AudioCommand as A, AudioError, AudioEvent as E};
-        let stage_temp =
-            |prefix: &str, id: u32, hint: &str, bytes: &[u8]| -> Result<String, String> {
-                let dir = host.cache_directory().join("audio");
-                std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-                let ext = std::path::Path::new(hint.split(['?', '#']).next().unwrap_or(hint))
-                    .extension()
-                    .and_then(|e| e.to_str())
-                    .filter(|e| !e.is_empty() && e.chars().all(|c| c.is_ascii_alphanumeric()))
-                    .unwrap_or("bin");
-                let mut random = [0u8; 8];
-                let _ = getrandom::fill(&mut random);
-                let path = dir.join(format!(
-                    "{prefix}-{id}-{:016x}.{ext}",
-                    u64::from_le_bytes(random)
-                ));
-                std::fs::write(&path, bytes).map_err(|e| e.to_string())?;
-                Ok(path.to_string_lossy().into_owned())
-            };
         match command {
-            A::Load {
-                id,
-                bytes,
-                hint,
-                max_duration,
-            } => {
-                let path = match stage_temp("sound", id, &hint, &bytes) {
-                    Ok(path) => path,
-                    Err(message) => {
-                        if let Some(route) = route.upgrade() {
-                            route.send(Message::HostEvent(
-                                EventKind::Audio,
-                                EventPayload::Audio {
-                                    id,
-                                    event: E::Failed {
-                                        error: AudioError::Failed,
-                                        message,
-                                    },
-                                },
-                            ));
-                        }
-                        return Ok(());
-                    }
-                };
-                self.submit(
-                    host,
-                    Request {
-                        route,
-                        kind: EventKind::Audio,
-                        id,
-                        stream: false,
-                        answer: true,
-                        paste: None,
-                    },
-                    SystemCommand {
-                        op: "audio-load".into(),
-                        count: Some(id),
-                        uri: Some(path),
-                        duration_ms: Some(max_duration.as_secs_f64() * 1000.0),
-                        ..Default::default()
-                    },
-                )
-            }
             A::LoadUrl { id, .. } => {
                 if let Some(route) = route.upgrade() {
                     route.send(Message::HostEvent(
@@ -366,8 +376,16 @@ impl System {
                 Ok(())
             }
             A::Open { id, src, settings } => {
+                // HAP rawfiles go straight to AVPlayer by descriptor. Other asset
+                // providers retain staging and its existing command ordering.
+                let asset = if src.starts_with("asset:/") {
+                    assets.raw_asset(&src)
+                } else {
+                    None
+                };
                 let (uri, temp_file, open_error) =
-                    if src.starts_with("http://") || src.starts_with("https://") {
+                    if asset.is_some() || src.starts_with("http://") || src.starts_with("https://")
+                    {
                         (src, false, None)
                     } else if let Some(rest) = src.strip_prefix("file://") {
                         let path = percent_encoding::percent_decode_str(rest)
@@ -377,10 +395,9 @@ impl System {
                     } else if src.starts_with('/') {
                         (src, false, None)
                     } else if src.starts_with("asset:/") {
-                        match assets
-                            .read(&src)
-                            .and_then(|bytes| stage_temp("player", id, &src, &bytes))
-                        {
+                        match assets.read(&src).and_then(|bytes| {
+                            Self::stage_audio_temp(host, "player", id, &src, &bytes)
+                        }) {
                             Ok(path) => (path, true, None),
                             Err(err) => (String::new(), false, Some(err)),
                         }
@@ -405,6 +422,7 @@ impl System {
                         op: "audio-open".into(),
                         count: Some(id),
                         uri: Some(uri),
+                        asset,
                         has_only: Some(temp_file),
                         text: open_error,
                         volume: Some(f64::from(settings.volume)),
@@ -593,10 +611,17 @@ impl System {
             return;
         };
         if let Some((node_id, report_only)) = request.paste {
-            if let Some(text) = value.text.filter(|t| !t.is_empty()) {
+            let text = value.text.unwrap_or_default();
+            let html = value.html.filter(|s| !s.is_empty());
+            let files = value.files.filter(|s| !s.is_empty());
+            let image = value.uri.filter(|s| !s.is_empty());
+            if !text.is_empty() || html.is_some() || files.is_some() || image.is_some() {
                 route.send(Message::InputPaste {
                     id: node_id,
                     text,
+                    html,
+                    files,
+                    image,
                     report_only,
                 });
             }
@@ -678,21 +703,13 @@ impl System {
                 event,
             }
         } else {
-            if !request.answer && value.error.is_none() {
-                return;
-            }
             if let Some(error) = value.error.as_deref() {
                 route.send(Message::Error(format!("system service: {error}")));
             }
-            let mut fields = Vec::new();
-            if request.answer {
-                fields.push(("id", PayloadValue::Number(f64::from(request.id))));
-            }
-            value.append_fields(&mut fields);
-            if fields.is_empty() {
+            let Some(payload) = request.map_payload(value) else {
                 return;
-            }
-            EventPayload::Map(fields)
+            };
+            payload
         };
         route.send(Message::HostEvent(request.kind, payload));
     }
@@ -715,6 +732,19 @@ impl System {
                 ..Default::default()
             });
         }
+    }
+}
+
+#[cfg(target_env = "ohos")]
+impl<R> Request<R> {
+    fn map_payload(&self, value: SystemEvent) -> Option<EventPayload> {
+        let mut fields = Vec::new();
+        if self.answer {
+            fields.push(("id", PayloadValue::Number(f64::from(self.id))));
+        }
+        // Answer-less notification listeners still deliver press replies.
+        value.append_fields(&mut fields);
+        (!fields.is_empty()).then_some(EventPayload::Map(fields))
     }
 }
 
@@ -759,6 +789,7 @@ pub(crate) struct SystemCommand {
     pub op: String,
     pub text: Option<String>,
     pub uri: Option<String>,
+    pub asset: Option<String>,
     pub has_only: Option<bool>,
     pub name: Option<String>,
     pub title: Option<String>,
@@ -796,6 +827,7 @@ pub(crate) struct SystemEvent {
     pub pressed: Option<String>,
     pub has: Option<bool>,
     pub text: Option<String>,
+    pub html: Option<String>,
     pub uri: Option<String>,
     pub width: Option<f64>,
     pub height: Option<f64>,
@@ -943,6 +975,35 @@ pub(crate) fn read_picked(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[cfg(target_env = "ohos")]
+    #[test]
+    fn answer_less_notification_listener_delivers_presses_and_skips_empty_replies() {
+        let request = Request::<()> {
+            route: std::sync::Weak::new(),
+            kind: EventKind::Notification,
+            id: 0,
+            stream: true,
+            answer: false,
+            paste: None,
+        };
+        let payload = request.map_payload(SystemEvent {
+            pressed: Some("reminder".into()),
+            ..Default::default()
+        });
+        let Some(EventPayload::Map(fields)) = payload else {
+            panic!("notification press was dropped");
+        };
+        assert!(matches!(
+            fields.as_slice(),
+            [("pressed", PayloadValue::Str(name))] if name == "reminder"
+        ));
+        assert!(request.map_payload(SystemEvent::default()).is_none());
+        let payload = request.map_payload(SystemEvent {
+            error: Some("failed".into()),
+            ..Default::default()
+        });
+        assert!(matches!(payload, Some(EventPayload::Map(_))));
+    }
     #[cfg(unix)]
     #[test]
     fn retained_descriptor_survives_sdk_close_and_keeps_original_name() {

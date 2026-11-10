@@ -101,6 +101,9 @@ pub(crate) enum Message {
     InputPaste {
         id: nsh_core::NodeId,
         text: String,
+        html: Option<String>,
+        files: Option<String>,
+        image: Option<String>,
         report_only: bool,
     },
     DialogResult {
@@ -361,12 +364,18 @@ impl State {
             Message::InputPaste {
                 id,
                 text,
+                html,
+                files,
+                image,
                 report_only,
-            } => self
-                .mounter
-                .as_ref()
-                .unwrap()
-                .input_paste(id, text, report_only)?,
+            } => self.mounter.as_ref().unwrap().input_paste(
+                id,
+                text,
+                html,
+                files,
+                image,
+                report_only,
+            )?,
             Message::ReconcileNavigation => {
                 self.mounter.as_mut().unwrap().reconcile_navigation()?;
             }
@@ -714,9 +723,7 @@ impl App {
         }
     }
     pub(crate) fn grant(&mut self, granted: Option<nsh_engine::Capabilities>) {
-        if let nsh_engine::App::Js(bundle) = &mut self.app
-            && bundle.policy.granted.is_none()
-        {
+        if let nsh_engine::App::Js(bundle) = &mut self.app {
             bundle.policy.granted = granted;
         }
     }

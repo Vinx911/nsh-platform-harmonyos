@@ -165,6 +165,12 @@ fn run(options: anyhow::Result<Options>) -> anyhow::Result<()> {
         "run" | "dev" => {
             let is_dev = options.command == "dev";
             let app = app_dir(&options)?;
+            if is_dev && is_rust_app(&app) {
+                bail!(
+                    "nsh dev hot-reloads TSX bundles on HarmonyOS; an app whose nsh.json has a \
+                     Rust \"root\" has no bundle. Run it with nsh run --target harmonyos"
+                );
+            }
             let out = app.join(".nsh/harmonyos/project");
             let release = options.release.unwrap_or(false);
             let config = package(&app, &out, release, is_dev, &options)?;
@@ -514,6 +520,17 @@ fn free_dev_port() -> u16 {
         .unwrap_or(8790)
 }
 
+fn clear_dev_forward(hdc: &Path, device: Option<&str>, port: u16) {
+    let node = format!("tcp:{port}");
+    for subcommand in ["rport", "fport"] {
+        let mut command = Command::new(hdc);
+        if let Some(device) = device {
+            command.args(["-t", device]);
+        }
+        let _ = command.args([subcommand, "rm", &node, &node]).output();
+    }
+}
+
 /// Installs the development HAP, forwards `port` from the device to this
 /// machine (`hdc rport`), launches the ability with `nsh.devUrl`, and runs
 /// `nsh dev --server-only`.
@@ -537,7 +554,7 @@ fn dev(
         cmd
     };
     let node = format!("tcp:{port}");
-    let _ = hdc_command().args(["fport", "rm", &node, &node]).output();
+    clear_dev_forward(&hdc, device, port);
     let rport = hdc_command()
         .args(["rport", &node, &node])
         .output()
@@ -552,7 +569,7 @@ fn dev(
     }
     let dev_url = format!("ws://127.0.0.1:{port}/ws");
     if let Err(err) = install(deveco, hap, bundle, device, Some(&dev_url)) {
-        let _ = hdc_command().args(["fport", "rm", &node, &node]).output();
+        clear_dev_forward(&hdc, device, port);
         return Err(err);
     }
     let mut server = Command::new(nsh());
@@ -566,7 +583,7 @@ fn dev(
         server.arg("--release");
     }
     let status = server.status().context("running nsh dev --server-only");
-    let _ = hdc_command().args(["fport", "rm", &node, &node]).output();
+    clear_dev_forward(&hdc, device, port);
     let status = status?;
     if !status.success() {
         bail!("nsh dev exited with {status}");
@@ -721,6 +738,24 @@ mod tests {
         let dev = parse(args("dev examples/counter --port 8791")).unwrap();
         assert_eq!(dev.command, "dev");
         assert_eq!(dev.port, Some(8791));
+    }
+
+    #[test]
+    fn dev_rejects_rust_roots_before_packaging() {
+        let app = env::temp_dir().join(format!("nsh-hm-rust-dev-{}", std::process::id()));
+        fs::create_dir_all(&app).unwrap();
+        fs::write(app.join("nsh.json"), r#"{ "root": "app::Root" }"#).unwrap();
+        let error = run(Ok(Options {
+            command: "dev".into(),
+            app: Some(app.clone()),
+            ..Default::default()
+        }))
+        .unwrap_err();
+        let message = error.to_string();
+        assert!(message.contains("Rust \"root\" has no bundle"), "{message}");
+        assert!(message.contains("nsh run --target harmonyos"), "{message}");
+        assert!(!app.join(".nsh").exists());
+        fs::remove_dir_all(app).unwrap();
     }
 
     #[test]
