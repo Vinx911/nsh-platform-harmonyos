@@ -70,6 +70,8 @@ pub(crate) struct EditorCommand {
     pub x: f64,
     pub y: f64,
     pub animated: bool,
+    pub text: Option<String>,
+    pub actions: Option<Vec<String>>,
 }
 
 #[derive(Default)]
@@ -136,6 +138,7 @@ pub(crate) struct ViewOptions {
     pub hue: f64,
     pub texture_surface: Option<String>,
     pub texture_insets: Option<TextureInsets>,
+    pub texture_ready: bool,
     pub test_id: Option<String>,
     pub semantic: bool,
     pub clickable: bool,
