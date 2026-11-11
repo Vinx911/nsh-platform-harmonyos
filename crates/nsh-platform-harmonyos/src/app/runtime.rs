@@ -961,9 +961,17 @@ impl Runtime {
         if state.engine.is_none() {
             return Ok(());
         }
-        state.environment.window = size.into();
+        let window = size.into();
+        let changed = state.environment.window != window;
+        state.environment.window = window;
         if let Some(mounter) = &state.mounter {
             mounter.resize(size).map_err(napi_error)?;
+        }
+        if changed && let Some(engine) = &state.engine {
+            // `Message::Resize` only relayouts the viewport; reactive
+            // environment signals (`windowSize()`, `window()`, `md:`/`lg:`
+            // classes) read `Environment::window`.
+            engine.control().set_environment(state.environment);
         }
         Ok(())
     }
